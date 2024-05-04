@@ -7,7 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import uuid
 import docker
 import redis
-
+import multiprocessing
+import psycopg2
 app = fastapi.FastAPI()
 
 origins = [
@@ -28,7 +29,8 @@ class HTTPBearerAndKeyAuthentication(HTTPBearer):
         # Check if the value is empty
         if not authorization:
             if self.auto_error:
-                raise fastapi.HTTPException(status_code=403, detail="Not authenticated")
+                raise fastapi.HTTPException(
+                    status_code=403, detail="Not authenticated")
             else:
                 return None
 
@@ -62,22 +64,69 @@ class Job(BaseModel):
     args: str
 
 
-# @app.get("/job/status")
-# def status(
-#     uuid: str,
-#     request: fastapi.Request,
-#     response: fastapi.Response,
-#     authorization: str = fastapi.Depends(
-#         HTTPBearerAndKeyAuthentication(auto_error=True)
-#     ),
-# ):
+@app.get("/job/status")
+def status(
+    uuid: str,
+    request: fastapi.Request,
+    response: fastapi.Response,
+    authorization: str = fastapi.Depends(
+        HTTPBearerAndKeyAuthentication(auto_error=True)
+    ),
+):
 
-#     client = redis.Redis(host="localhost", port=6379, db=0)
-#     job_status = client.get(uuid)
-#     if job_status:
-#         return job_status
-#     else:
-#         return "Job not found"
+    client = redis.Redis(host="localhost", port=6379, db=0)
+    job_status = client.get(uuid)
+    while job_status == "Started":
+        job_status = client.get(uuid)
+        yield job_status
+
+    yield job_status
+
+
+def worker(uuid: str):
+    redis_client = redis.Redis(host="localhost", port=6379, db=0)
+    conn_string = "host='localhost' dbname='covertswarm' user='postgres' password='mysecretpassword'"
+    postgres_client = psycopg2.connect(conn_string)
+
+    client = docker.from_env()
+
+    print("Docker client started...")
+    try:
+        container = client.containers.run(
+            "instrumentisto/nmap", f"{uuid}", detach=False
+        )
+
+    except docker.errors.ContainerError as e:
+        print(e)
+        redis_client.set(uuid, str(e))
+        return
+    except Exception as e:
+        print(e)
+        redis_client.set(uuid, f"Unhandled container exception: {str(e)}")
+        return
+
+    # Set in the database.
+
+    try:
+        res = container.decode("utf-8")
+    except UnicodeDecodeError as e:
+        print(e)
+        redis_client.set(
+            uuid, f"Nmap returned format unknown to UTF-8: {str(e)}")
+        return
+    except Exception as e:
+        print(e)
+        redis_client.set(uuid, f"Unhandled decode exception: {str(e)}")
+
+    cursor = postgres_client.cursor()
+    cursor.execute(
+        "INSERT INTO jobs (uuid, result) VALUES (%s, %s)", (uuid, res)
+    )
+    postgres_client.commit()
+    postgres_client.close()
+    redis_client.set("uuid", "Completed")
+    redis_client.close()
+    print("DONE!")
 
 
 @app.post("/job/create")
@@ -90,25 +139,66 @@ def read_root(
     ),
 ):
 
-    id = str(uuid.uuid4())
+    worker_id = str(uuid.uuid4())
+    print(worker_id)
 
-    client = docker.from_env()
+    multiprocessing.Process(target=worker, args=(worker_id,)).start()
+    return worker_id
 
-    try:
-        container = client.containers.run(
-            "instrumentisto/nmap", f"{job.args}", detach=False
-        )
 
-    except docker.errors.ContainerError as e:
-        return str(e)
-    except Exception as e:
-        return f"Unhandled container exception: {str(e)}"
+@app.get("/job/download")
+def download(
+    uuid: str,
+    request: fastapi.Request,
+    response: fastapi.Response,
+    authorization: str = fastapi.Depends(
+        HTTPBearerAndKeyAuthentication(auto_error=True)
+    ),
+):
 
-    try:
-        res = container.decode("utf-8")
-    except UnicodeDecodeError as e:
-        return f"Nmap returned format unknown to UTF-8: {str(e)}"
-    except Exception as e:
-        return f"Unhandled decode exception: {str(e)}"
+    conn_string = "host='localhost' dbname='covertswarm' user='postgres' password = 'mysecretpassword'"
+    conn = psycopg2.connect(conn_string)
+    cursor = conn.cursor()
+    cursor.execute("SELECT result FROM jobs WHERE uuid = %s", (uuid,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0]
 
-    return res
+
+@app.on_event("startup")
+async def startup_event():
+    # Make sure postgres tasks database exists
+    conn_string = "host='localhost' dbname='covertswarm' user='postgres' password='mysecretpassword'"
+    conn = psycopg2.connect(conn_string)
+
+    cursor = conn.cursor()
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS jobs (uuid TEXT PRIMARY KEY, result TEXT)")
+    conn.commit()
+    conn.close()
+
+    # Make sure redis is running
+    redis_client = redis.Redis(host="localhost", port=6379, db=0)
+    redis_client.set("test", "test")
+    assert redis_client.get("test") == b"test"
+    redis_client.delete("test")
+    redis_client.close()
+
+    print("Startup complete")
+
+# Either host it on the API where you can have a collection of APIs that also do
+# the work in something like threads. In this circumstance the API would have
+# realtime response.
+
+# Or you could setup a queue with something like RabbitMQ where there would have
+# to be some kind of polling.
+
+# If the queues are going to be a long time then you should have a dedicated
+# queue based system like Rabbit. Otherwise, if you're expecting quick response
+# time then you can use the API method.
+
+# Personally I like the polling solution, it's slightly more expensive because
+# it's constantly creating a new connection with the API as opposed to a
+# a websocket or SSE but it takes the load off of the API which would need to do
+# the work. If it becomes a long task with a big backlog that would be a long
+# connection between the client and the server which could become a problem.
