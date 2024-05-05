@@ -25,14 +25,19 @@ class HTTPBearerAndKeyAuthentication(HTTPBearer):
     async def __call__(self, request: fastapi.Request) -> typing.Optional[str]:
         # Get the value of the Authorization header
         authorization: str = request.headers.get("Authorization")
+        token: str = request.query_params.get("token")
 
         # Check if the value is empty
         if not authorization:
-            if self.auto_error:
-                raise fastapi.HTTPException(
-                    status_code=403, detail="Not authenticated")
+            if not token:
+                if self.auto_error:
+                    raise fastapi.HTTPException(
+                        status_code=403, detail="Not authenticated")
+                else:
+                    return None
             else:
-                return None
+                if token == "someauthbearertoken":
+                    return token
 
         # Check if the value is a bearer token
         scheme, param = authorization.split()
@@ -76,11 +81,13 @@ def status(
 
     client = redis.Redis(host="localhost", port=6379, db=0)
     job_status = client.get(uuid)
-    while job_status == "Started":
-        job_status = client.get(uuid)
-        yield job_status
+    print(job_status)
+    return job_status
+    # while job_status == "Started":
+    #     job_status = client.get(uuid)
+    #     yield job_status
 
-    yield job_status
+    # yield job_status
 
 
 def worker(uuid: str):
@@ -124,7 +131,7 @@ def worker(uuid: str):
     )
     postgres_client.commit()
     postgres_client.close()
-    redis_client.set("uuid", "Completed")
+    redis_client.set(uuid, "Completed")
     redis_client.close()
     print("DONE!")
 
@@ -140,8 +147,10 @@ def read_root(
 ):
 
     worker_id = str(uuid.uuid4())
-    print(worker_id)
 
+    redis_client = redis.Redis(host="localhost", port=6379, db=0)
+    redis_client.set(worker_id, "Started")
+    redis_client.close()
     multiprocessing.Process(target=worker, args=(worker_id,)).start()
     return worker_id
 
@@ -163,6 +172,46 @@ def download(
     result = cursor.fetchone()
     conn.close()
     return result[0]
+
+
+@app.get("/job/list")
+def list(
+    request: fastapi.Request,
+    response: fastapi.Response,
+    authorization: str = fastapi.Depends(
+        HTTPBearerAndKeyAuthentication(auto_error=True)
+    ),
+):
+
+    conn_string = "host='localhost' dbname='covertswarm' user='postgres' password = 'mysecretpassword'"
+    conn = psycopg2.connect(conn_string)
+    cursor = conn.cursor()
+    cursor.execute("SELECT uuid FROM jobs")
+    result = cursor.fetchall()
+    conn.close()
+    return result
+
+
+class Login(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/login")
+def login(
+    login: Login,
+    request: fastapi.Request,
+    response: fastapi.Response
+):
+    if login.username != "admin" or login.password != "admin":
+        raise fastapi.HTTPException(
+            status_code=403, detail="Invalid credentials")
+
+    res = fastapi.responses.JSONResponse(
+        content={"token": "someauthbearertoken"}, status_code=200)
+    res.set_cookie(key="token", value="someauthbearertoken",
+                   httponly=True, samesite="none")
+    return res
 
 
 @app.on_event("startup")

@@ -43,10 +43,12 @@
     [(ngModel)]="scanArguments"
     placeholder="Enter arguments..."
   />
-  <button (click)="performScan(scanArguments)">Scan</button>
+  <button (click)="startScan(scanArguments)">Scan</button>
 
   <h2>Results</h2>
   <pre>{{ results }}</pre>
+
+  <div id="dl"></div>
 </main>
 
 <router-outlet />
