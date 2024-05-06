@@ -55,8 +55,6 @@ def get_redis_client() -> Generator[redis.Redis, None, None]:
 @api.get("/job/status")
 def status(
     uuid: str,
-    request: fastapi.Request,
-    response: fastapi.Response,
     redis_client: redis.Redis = fastapi.Depends(get_redis_client),
 ):
     """Gets the status of the job with the given UUID
@@ -75,8 +73,6 @@ def status(
 
 @api.delete("/jobs")
 def delete_jobs(
-    request: fastapi.Request,
-    response: fastapi.Response,
     redis_client: redis.Redis = fastapi.Depends(get_redis_client),
 ) -> list[str]:
     """Deletes all files in the files folder
@@ -99,11 +95,18 @@ def delete_jobs(
 
 
 def validation_checks(arg: str):
+    """Validates the argument to make sure it doesn't contain any disallowed
+    characters and is not too long.
 
-    # PRevent bash special characters
+    Args:
+        arg (str): User input argument
 
-    # Instead of doing a replace for each check just go through the entire
-    # string once and raise if an invalid character exists.
+    Raises:
+        fastapi.HTTPException: Upon disallowed characters or too long argument
+    """
+
+    # Iterating by character as opposed to doing a loop of index or replace
+    # checks to avoid unnecessary O(n^2) complexity.
     disallowed_chars_used = set()
     for char in arg:
         if char in ["&", "|", ";", "$", ">", "<", "`", "\\", "!"]:
@@ -111,7 +114,7 @@ def validation_checks(arg: str):
 
     if disallowed_chars_used:
         raise fastapi.HTTPException(
-            status_code=402,
+            status_code=400,
             detail="Disallowed character '{}' in argument".format(
                 ", ".join(disallowed_chars_used)
             ),
@@ -119,14 +122,17 @@ def validation_checks(arg: str):
 
     if len(arg) > MAX_ARG_LENGTH:
         raise fastapi.HTTPException(
-            status_code=402, detail="Argument too long, max 1000 characters"
+            status_code=400, detail="Argument too long, max 1000 characters"
+        )
+
+    if arg.startswith("file://"):
+        raise fastapi.HTTPException(
+            status_code=400, detail="Illegal protocol used in argument"
         )
 
 
 @api.post("/job/create")
 def read_root(
-    request: fastapi.Request,
-    response: fastapi.Response,
     job: Job,
     rabbit_connection: pika.BlockingConnection = fastapi.Depends(get_rabbit_connection),
     redis_client: redis.Redis = fastapi.Depends(get_redis_client),
@@ -160,9 +166,7 @@ def read_root(
 
 
 @api.get("/job/download")
-def download(
-    uuid: str, request: fastapi.Request, response: fastapi.Response
-) -> fastapi.responses.FileResponse:
+def download(uuid: str, response: fastapi.Response) -> fastapi.responses.FileResponse:
     """Downloads the file with the given UUID
 
     Args:
@@ -194,8 +198,6 @@ def get_keys_and_values(redis_client: redis.Redis = fastapi.Depends(get_redis_cl
 
 @api.get("/job/list")
 def list(
-    request: fastapi.Request,
-    response: fastapi.Response,
     redis_client: redis.Redis = fastapi.Depends(get_redis_client),
 ):
     """Gets the list of files in the files folder
@@ -205,15 +207,8 @@ def list(
         response (fastapi.Response): Response object
 
     Returns:
-        list[str]: List of files in the files folder without the .xml extension
+        list[str]: List of files in the files from the redis database
     """
-
-    files = [
-        file.rstrip(".xml")
-        for file in os.listdir(FILES_FOLDER)
-        if file.endswith(".xml")
-    ]
-
     return get_keys_and_values(redis_client)
 
 

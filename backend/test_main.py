@@ -58,25 +58,38 @@ def test_job_list():
 
 
 def test_job_create():
+
+    # You could put this in a loop, but I find it easier to read if it fails you
+    # know exactly where it failed.
     response = client.post("/api/job/create", json={"args": "localhost"})
     assert response.status_code == 200
 
-    # This test checks for basic OS command injection vulnerabilities.
-    payloads = [
-        "127.0.0.1; ls",
-        "127.0.0.1 | ls",
-        "127.0.0.1 && ls",
-        "127.0.0.1 || ls",
-        "`ls`",
-        "$(ls)",
-        "127.0.0.1`ls`",
-        "127.0.0.1$(ls)",
-        "file:///etc/passwd",
-    ]
+    response = client.post("/api/job/create", json={"args": "127.0.0.1; ls"})
+    assert response.status_code == 400
 
-    for payload in payloads:
-        response = client.post("/api/job/create", json={"args": payload})
-        assert response.status_code == 400
+    response = client.post("/api/job/create", json={"args": "127.0.0.1 | ls"})
+    assert response.status_code == 400
+
+    response = client.post("/api/job/create", json={"args": "127.0.0.1 && ls"})
+    assert response.status_code == 400
+
+    response = client.post("/api/job/create", json={"args": "127.0.0.1 || ls"})
+    assert response.status_code == 400
+
+    response = client.post("/api/job/create", json={"args": "`ls`"})
+    assert response.status_code == 400
+
+    response = client.post("/api/job/create", json={"args": "$(ls)"})
+    assert response.status_code == 400
+
+    response = client.post("/api/job/create", json={"args": "127.0.0.1`ls`"})
+    assert response.status_code == 400
+
+    response = client.post("/api/job/create", json={"args": "127.0.0.1$(ls)"})
+    assert response.status_code == 400
+
+    response = client.post("/api/job/create", json={"args": "file:///etc/passwd"})
+    assert response.status_code == 400
 
     # Large buffer test
     large_input = "A" * 10000
@@ -111,7 +124,7 @@ def test_download():
     redis_client = RedisClientSingleton().get_instance()
     redis_client.set(uuid, "Done")
 
-    # Move a file there
+    # Simulating a nmap output file
     with open(os.path.join(FILES_FOLDER, f"{uuid}.xml"), "w") as f:
         f.write("")
 
