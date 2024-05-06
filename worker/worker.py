@@ -5,7 +5,7 @@ from time import sleep
 from pika.spec import Basic, BasicProperties
 from pika.adapters.blocking_connection import BlockingChannel
 import pika
-from env import FILES_FOLDER, REDIS_HOST, REDIS_PORT
+from env import FILES_FOLDER, RABBITMQ_HOST, RABBITMQ_PORT, REDIS_HOST, REDIS_PORT
 import redis
 import docker
 from pika.exceptions import (
@@ -78,8 +78,8 @@ def worker(
 def main():
     credentials = pika.PlainCredentials("guest", "guest")
     parameters = pika.ConnectionParameters(
-        host="localhost",
-        port="5672",
+        host=RABBITMQ_HOST,
+        port=RABBITMQ_PORT,
         credentials=credentials,
         heartbeat=0,
         socket_timeout=7,

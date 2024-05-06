@@ -1,5 +1,4 @@
 fastapi
-docker
 redis
 gunicorn
 pika
