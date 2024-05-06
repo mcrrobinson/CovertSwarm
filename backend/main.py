@@ -74,7 +74,7 @@ def status(
 @api.delete("/jobs")
 def delete_jobs(
     redis_client: redis.Redis = fastapi.Depends(get_redis_client),
-) -> list[str]:
+):
     """Deletes all files in the files folder
 
     Args:
@@ -88,10 +88,17 @@ def delete_jobs(
     for file in files:
         os.remove(os.path.join(FILES_FOLDER, file))
 
-    # Delete all keys in redis
-    redis_client.flushdb()
+    # Don't delete the tasks that are running to avoid deadlocks
+    keys = redis_client.keys()
+    processing_keys = []
+    for key in keys:
+        value = redis_client.get(key).decode()
+        if value == "Completed":
+            redis_client.delete(key)
+        else:
+            processing_keys.append({"uuid": key.decode(), "value": value})
 
-    return []
+    return processing_keys
 
 
 def validation_checks(arg: str):

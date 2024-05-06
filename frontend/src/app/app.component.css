@@ -1,0 +1,54 @@
+.input-container {
+  display: flex;
+  align-items: center;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  flex: 1;
+}
+
+.prefix {
+  background-color: #f0f0f0;
+  padding: 8px 12px;
+  border-right: 1px solid #ccc;
+  color: #333;
+  font-family: monospace;
+}
+
+input[type="text"] {
+  flex-grow: 1;
+  border: none;
+  padding: 8px;
+  font-family: inherit;
+}
+
+input[type="text"]:focus {
+  outline: none;
+}
+
+.flex {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+button {
+  padding: 8px 18px;
+  margin: 0 0 0 0.3rem;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #333;
+  cursor: pointer;
+  font-size: 16px;
+  background-color: #fff;
+  transition: all 0.3s ease;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+button:hover,
+button:focus {
+  background-color: #f8f8f8;
+  border-color: #000;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  outline: none;
+}
