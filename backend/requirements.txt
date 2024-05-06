@@ -3,3 +3,4 @@ docker
 redis
 gunicorn
 pika
+fakeredis

@@ -17,3 +17,5 @@ try:
 except ValueError as e:
     print("RABBITMQ_PORT must be an integer, {}".format(e))
     exit(1)
+
+MAX_ARG_LENGTH = 1000

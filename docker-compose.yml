@@ -39,17 +39,3 @@ services:
     container_name: 'redis'
     ports:
       - '6379:6379'
-
-# Considerations.
-# The backend service calls docker so it is excluded in this example. There
-# are ways to make it work however there are security implications that occur
-# and this method would not be used in a real world setting. If you were to do
-# this within the cloud you would call a cloud lambda function or something.
-# This means that the nginx must be run on host in development in order to
-# access the local machine. In a real world setting the API would be exposed
-# with authentication so this sort of networking wouldn't be necessary. This is
-# for development. To avoid using network as host, I am using the 
-# host.docker.internal address to access the host machine. This is only 
-# available on Mac and Windows.
-
-# https://docs.docker.com/desktop/networking/#use-cases-and-workarounds

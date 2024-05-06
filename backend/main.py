@@ -1,16 +1,14 @@
 import json
 import os
 from time import sleep
-import docker.errors
+from typing import Generator
 import fastapi
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import uuid
-import docker
 import redis
-import multiprocessing
 import logging
-from env import FILES_FOLDER, RABBITMQ_HOST, REDIS_HOST, REDIS_PORT
+from env import FILES_FOLDER, RABBITMQ_HOST, REDIS_HOST, REDIS_PORT, MAX_ARG_LENGTH
 import pika
 
 app = fastapi.FastAPI()
@@ -32,8 +30,35 @@ class Job(BaseModel):
     args: str
 
 
+def get_redis():
+    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+
+
+# Dependency to get RabbitMQ connection
+def get_rabbit_connection() -> Generator[pika.BlockingConnection, None, None]:
+    # Connect to the RabbitMQ server
+    connection = pika.BlockingConnection(pika.ConnectionParameters(RABBITMQ_HOST))
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+def get_redis_client() -> Generator[redis.Redis, None, None]:
+    redis_client = get_redis()
+    try:
+        yield redis_client
+    finally:
+        redis_client.close()
+
+
 @api.get("/job/status")
-def status(uuid: str, request: fastapi.Request, response: fastapi.Response) -> str:
+def status(
+    uuid: str,
+    request: fastapi.Request,
+    response: fastapi.Response,
+    redis_client: redis.Redis = fastapi.Depends(get_redis_client),
+):
     """Gets the status of the job with the given UUID
 
     Args:
@@ -44,14 +69,16 @@ def status(uuid: str, request: fastapi.Request, response: fastapi.Response) -> s
     Returns:
         str: Status of the job
     """
-
-    client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-    job_status = client.get(uuid)
+    job_status = redis_client.get(uuid)
     return job_status
 
 
 @api.delete("/jobs")
-def delete_jobs(request: fastapi.Request, response: fastapi.Response) -> list[str]:
+def delete_jobs(
+    request: fastapi.Request,
+    response: fastapi.Response,
+    redis_client: redis.Redis = fastapi.Depends(get_redis_client),
+) -> list[str]:
     """Deletes all files in the files folder
 
     Args:
@@ -66,15 +93,44 @@ def delete_jobs(request: fastapi.Request, response: fastapi.Response) -> list[st
         os.remove(os.path.join(FILES_FOLDER, file))
 
     # Delete all keys in redis
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
     redis_client.flushdb()
-    redis_client.close()
 
     return []
 
 
+def validation_checks(arg: str):
+
+    # PRevent bash special characters
+
+    # Instead of doing a replace for each check just go through the entire
+    # string once and raise if an invalid character exists.
+    disallowed_chars_used = set()
+    for char in arg:
+        if char in ["&", "|", ";", "$", ">", "<", "`", "\\", "!"]:
+            disallowed_chars_used.add(char)
+
+    if disallowed_chars_used:
+        raise fastapi.HTTPException(
+            status_code=402,
+            detail="Disallowed character '{}' in argument".format(
+                ", ".join(disallowed_chars_used)
+            ),
+        )
+
+    if len(arg) > MAX_ARG_LENGTH:
+        raise fastapi.HTTPException(
+            status_code=402, detail="Argument too long, max 1000 characters"
+        )
+
+
 @api.post("/job/create")
-def read_root(request: fastapi.Request, response: fastapi.Response, job: Job):
+def read_root(
+    request: fastapi.Request,
+    response: fastapi.Response,
+    job: Job,
+    rabbit_connection: pika.BlockingConnection = fastapi.Depends(get_rabbit_connection),
+    redis_client: redis.Redis = fastapi.Depends(get_redis_client),
+):
     """Creates a new job and returns the UUID of the job
 
     Args:
@@ -86,28 +142,20 @@ def read_root(request: fastapi.Request, response: fastapi.Response, job: Job):
         str: UUID of the job
     """
 
+    # Realistically you don't need these checks as the security is in the hands
+    # of the nmap command as this pipes the command directly into the "nmap"
+    # command line tool. However, for sanity sake I will disallow certain
+    # offenders like bash special characters.
+    validation_checks(job.args)
+
     worker_id = str(uuid.uuid4())
-
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
     redis_client.set(worker_id, "Queued")
-    redis_client.close()
 
-    # Send over rabbitmq
-    # Connect to RabbitMQ
-    connection = pika.BlockingConnection(pika.ConnectionParameters(RABBITMQ_HOST))
-    channel = connection.channel()
-
-    # Declare the queue
+    # Send the job to the queue and then close the connection for cleanup.
+    channel = rabbit_connection.channel()
     channel.queue_declare(queue="job_queue")
-
-    # Send the UUID and job arguments
-
     message = json.dumps({"uuid": worker_id, "args": job.args})
     channel.basic_publish(exchange="", routing_key="job_queue", body=message)
-
-    # Close the connection
-    connection.close()
-    # multiprocessing.Process(target=worker, args=(worker_id, job.args)).start()
     return worker_id
 
 
@@ -136,18 +184,20 @@ def download(
     )
 
 
-def get_keys_and_values():
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+def get_keys_and_values(redis_client: redis.Redis = fastapi.Depends(get_redis_client)):
     keys = redis_client.keys()
     values = [
         {"uuid": key.decode(), "value": redis_client.get(key).decode()} for key in keys
     ]
-    redis_client.close()
     return values
 
 
 @api.get("/job/list")
-def list(request: fastapi.Request, response: fastapi.Response):
+def list(
+    request: fastapi.Request,
+    response: fastapi.Response,
+    redis_client: redis.Redis = fastapi.Depends(get_redis_client),
+):
     """Gets the list of files in the files folder
 
     Args:
@@ -164,14 +214,7 @@ def list(request: fastapi.Request, response: fastapi.Response):
         if file.endswith(".xml")
     ]
 
-    # Get entire redis list
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-    keys = redis_client.keys()
-
-    redis_client.close()
-
-    return get_keys_and_values()
-    return files
+    return get_keys_and_values(redis_client)
 
 
 @api.on_event("startup")
@@ -188,7 +231,7 @@ async def startup_event():
     # Make sure redis is running
     while True:
         try:
-            redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+            redis_client = get_redis()
             redis_client.set("test", "test")
             assert redis_client.get("test") == b"test"
             redis_client.delete("test")
