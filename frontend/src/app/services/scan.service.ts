@@ -7,8 +7,7 @@ import { switchMap, takeWhile } from 'rxjs/operators';
   providedIn: 'root',
 })
 export class ScanService {
-  private baseURL: string = 'http://localhost:8000';
-  results: any; // Declare the results property with a type
+  private baseURL: string = '/api';
 
   constructor(private http: HttpClient) {}
 
@@ -19,8 +18,8 @@ export class ScanService {
     this.http.post<any>(`${this.baseURL}/job/create`, { args: scanArguments }, { headers })
       .subscribe(
         data => {
-          this.results = data;  // Now 'results' is a declared property
           console.log('Job started successfully:', data);
+          this.addCard(data, 'In Progress');
           this.pollJobStatus(data);  // Assuming the job ID is returned in the response
         },
         error => {
@@ -49,6 +48,10 @@ export class ScanService {
           this.addDownloadButton(jobId);
         } else {
             console.log('Job status:', response);
+            const element = document.getElementById(jobId);
+            if (element) {
+                element.innerText = response;
+            }
         }
       },
       error => {
@@ -56,15 +59,31 @@ export class ScanService {
       }
     );
   }
-  private addDownloadButton(jobId: string): void {
-    // Assuming there is a container div with id 'downloadButtonContainer' in your HTML
+
+  private addCard(jobId: string, status:string): void {
+
+    const card = document.createElement('div');
+    card.className = 'result-container';
+    
+    const name = document.createElement('div');
+    name.className = 'result-name';
+    name.innerText = jobId;
+    card.appendChild(name);
+
+    const link = document.createElement('a');
+    link.id = jobId
+    link.innerText = status;
+    card.appendChild(link);
+
     const container = document.getElementById('dl');
-    const button = document.createElement('button');
-    button.innerText = 'Download Result';
-    button.addEventListener('click', () => {
-      window.location.href = `${this.baseURL}/job/download?uuid=${jobId}&token=someauthbearertoken`;
-    });
-    container?.appendChild(button);
+    container?.appendChild(card);
+  }
+  private addDownloadButton(jobId: string): void {
+    const element: HTMLAnchorElement | null = document.getElementById(jobId) as HTMLAnchorElement;
+    if (element) {
+      element.innerText = "Download";
+      element.href = `${this.baseURL}/job/download?uuid=${jobId}`;
+    }
   }
 }
 

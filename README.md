@@ -1,18 +1,23 @@
 # CovertSwarm
 
-Coding assignment
+## Docker installation (Windows & Mac)
 
-docker run --name some-postgres -p 5432:5432 -e POSTGRES_PASSWORD=mysecretpassword -d postgres
+[Read more](https://docs.docker.com/desktop/networking/#use-cases-and-workarounds)
 
-curl -H 'Authorization: Bearer someauthbearertoken' \
--H 'Content-Type: application/json' \
--d '{"args":"someargs"}' \
--X POST \
-http://localhost:8000/job/create
+1. Install docker
+2. Run the following command to build the docker image
+```bash
+docker compose up --build
+```
 
-curl -H 'Authorization: Bearer someauthbearertoken' \
--H 'Content-Type: application/json' \
--X GET \
-http://localhost:8000/job/status?uuid=51de1bac-c728-4e0a-af3f-75668730b02b
+## Running the backend
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
 
-docker run --name some-postgres -p 5432:5432 -e POSTGRES_PASSWORD=mysecretpassword -d postgres
+## Using the app
+1. Open your browser and go to `http://localhost
+2. There will be a option to enter arguments for the nmap commands. Enter the 
+arguments and click on the submit button.
+3. The status of the scan will be displayed on the screen. Once the scan is
+completed, a download link will be displayed to download the scan results.

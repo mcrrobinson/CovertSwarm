@@ -33,21 +33,102 @@
     box-sizing: border-box;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+
+    .result-container {
+      display: flex;
+      justify-content: space-between;
+      padding: 1rem;
+      border: 1px solid var(--gray-400);
+      border-radius: 0.5rem;
+      margin-bottom: 1rem;
+    }
+  }
+  .input-container {
+    display: flex;
+    align-items: center;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    flex: 1;
+  }
+
+  .prefix {
+    background-color: #f0f0f0;
+    padding: 8px 12px;
+    border-right: 1px solid #ccc;
+    color: #333;
+    font-family: monospace;
+  }
+
+  input[type="text"] {
+    flex-grow: 1;
+    border: none;
+    padding: 8px;
+    font-family: inherit;
+  }
+
+  input[type="text"]:focus {
+    outline: none;
+  }
+
+  .flex {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  button {
+    padding: 8px 18px;
+    margin: 0 0 0 1rem;
+    border: 1px solid #333;
+    border-radius: 6px;
+    color: #333;
+    cursor: pointer;
+    font-size: 16px;
+    background-color: #fff;
+    transition: all 0.3s ease;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+  }
+
+  button:hover,
+  button:focus {
+    background-color: #f8f8f8;
+    border-color: #000;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    outline: none;
   }
 </style>
 
 <main class="main">
   <h1>Nmap Scanner</h1>
-  <input
-    type="text"
-    [(ngModel)]="scanArguments"
-    placeholder="Enter arguments..."
-  />
-  <button (click)="startScan(scanArguments)">Scan</button>
+  <div class="flex">
+    <div class="input-container">
+      <span class="prefix" title="Arguments run before">nmap -xO</span>
+      <input
+        type="text"
+        [(ngModel)]="scanArguments"
+        placeholder="Enter arguments..."
+      />
+    </div>
+    <button (click)="startScan(scanArguments)">Scan</button>
+  </div>
 
-  <h2>Results</h2>
-  <pre>{{ results }}</pre>
+  <div class="flex">
+    <h2>Results</h2>
+    <button (click)="deleteAll()">Delete all</button>
+  </div>
+  <div *ngFor="let result of results" class="result-container">
+    <div class="result-name">{{ result }}</div>
 
+    <!-- For authentication you would generally pass the token in the parameters 
+    to authenticate the user considering you can't set the headers. An alternative 
+    to this would be download the file with a fetch and use some JS chunking to 
+    download the file but having a backend that can accept the token in the 
+    parameters and in the authorization header I would say would be optimal. -->
+    <div class="result-link">
+      <a href="/api/job/download?uuid={{ result.status }}">Download</a>
+    </div>
+  </div>
   <div id="dl"></div>
 </main>
 
