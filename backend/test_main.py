@@ -3,10 +3,7 @@ import fakeredis
 from fastapi.testclient import TestClient
 from main import app, get_rabbit_connection, get_redis_client
 import pika
-
 from env import FILES_FOLDER
-
-client = TestClient(app)
 
 
 class BlockingConnection(pika.BlockingConnection):
@@ -47,8 +44,13 @@ def get_redis_client_mock():
     return RedisClientSingleton().get_instance()
 
 
+client = TestClient(app)
 app.dependency_overrides[get_rabbit_connection] = get_rabbit_connection_mock
 app.dependency_overrides[get_redis_client] = get_redis_client_mock
+
+# Startup code doesn't get called so doing it manually.
+if not os.path.exists(FILES_FOLDER):
+    os.makedirs(FILES_FOLDER)
 
 
 def test_job_list():
