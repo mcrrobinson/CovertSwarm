@@ -14,6 +14,8 @@ pip install -r requirements.txt
 python worker.py
 ```
 
+> **NOTE**: Tested with *Python 3.11*
+
 ## Using the app
 1. Open your browser and go to `http://localhost`
 2. There will be a option to enter arguments for the nmap commands. Enter the 
