@@ -1,6 +1,13 @@
+import asyncio
 import os
+from typing import AsyncIterator
+from unittest import mock
+from aioredis import Redis
 import fakeredis
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
+import pytest_asyncio
 from main import app, get_rabbit_connection, get_redis_client
 import pika
 from env import FILES_FOLDER
@@ -26,40 +33,46 @@ class BlockingConnection(pika.BlockingConnection):
         pass
 
 
-class RedisClientSingleton:
-    _instance = None
-
-    @classmethod
-    def get_instance(cls):
-        if cls._instance is None:
-            cls._instance = fakeredis.FakeStrictRedis()
-        return cls._instance
-
-
 def get_rabbit_connection_mock():
     return BlockingConnection()
 
 
-def get_redis_client_mock():
-    return RedisClientSingleton().get_instance()
+@pytest_asyncio.fixture(scope="function")
+async def redis_conn() -> AsyncIterator[Redis]:
+    async with fakeredis.aioredis.FakeRedis(
+        decode_responses=True, version=(6,)
+    ) as redis_conn:
+        await redis_conn.flushdb()
+        yield redis_conn
 
 
-client = TestClient(app)
-app.dependency_overrides[get_rabbit_connection] = get_rabbit_connection_mock
-app.dependency_overrides[get_redis_client] = get_redis_client_mock
+@pytest_asyncio.fixture(scope="function")
+async def client(redis_conn: Redis) -> AsyncIterator[TestClient]:
+    get_redis_client_mock = mock.patch(
+        "main.get_redis_client", return_value=redis_conn
+    ).start()
+    app.dependency_overrides[get_redis_client] = get_redis_client_mock
+    app.dependency_overrides[get_rabbit_connection] = get_rabbit_connection_mock
 
-# Startup code doesn't get called so doing it manually.
-if not os.path.exists(FILES_FOLDER):
-    os.makedirs(FILES_FOLDER)
+    with TestClient(app) as client:
+        # Startup code doesn't get called so doing it manually.
+        if not os.path.exists(FILES_FOLDER):
+            os.makedirs(FILES_FOLDER)
+        yield client
+
+    get_redis_client_mock.stop()
+    app.dependency_overrides.pop(get_redis_client)
 
 
-def test_job_list():
+@pytest.mark.asyncio
+async def test_job_list(client: TestClient):
     response = client.get("/api/job/list")
     assert response.status_code == 200
     assert response.json() == []
 
 
-def test_job_create():
+@pytest.mark.asyncio
+async def test_job_create(client: TestClient):
 
     # You could put this in a loop, but I find it easier to read if it fails you
     # know exactly where it failed.
@@ -99,19 +112,8 @@ def test_job_create():
     assert response.status_code == 400
 
 
-def test_job_status():
-    # Create the job
-    response = client.post("/api/job/create", json={"args": "localhost"})
-    assert response.status_code == 200
-
-    uuid = response.json()
-    assert len(uuid) == 36  # e.g. 417b0f97-882e-4a1b-8408-d90c061c283b
-
-    response = client.get(f"/api/job/status?uuid={uuid}")
-    assert response.json() == "Queued"
-
-
-def test_download():
+@pytest.mark.asyncio
+async def test_download(client: TestClient):
     response = client.post("/api/job/create", json={"args": "localhost"})
     assert response.status_code == 200
 
@@ -122,9 +124,10 @@ def test_download():
     response = client.get(f"/api/job/download?uuid={uuid}")
     assert response.status_code == 404
 
-    # Set the status to done
-    redis_client = RedisClientSingleton().get_instance()
-    redis_client.set(uuid, "Done")
+    response = client.patch(
+        "/api/job/update", json={"uuid": uuid, "task": "update", "status": "Completed"}
+    )
+    assert response.status_code == 200
 
     # Simulating a nmap output file
     with open(os.path.join(FILES_FOLDER, f"{uuid}.xml"), "w") as f:
@@ -134,7 +137,9 @@ def test_download():
     assert response.status_code == 200
 
 
-def test_delete_jobs():
+@pytest.mark.asyncio
+async def test_delete_jobs(client: TestClient):
+    # Create a job
     response = client.post("/api/job/create", json={"args": "localhost"})
     assert response.status_code == 200
 

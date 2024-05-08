@@ -4,9 +4,10 @@ import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 import { ScanService } from './services/scan.service';
 import { CommonModule } from '@angular/common';
-import { switchMap, takeWhile, timer } from 'rxjs';
+import { Subscription, switchMap, takeWhile, timer } from 'rxjs';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { ErrorDialogComponent } from './error-dialog.component';
+import { EventSourceService } from './event-source.service';
 
 
 @Component({
@@ -20,8 +21,9 @@ export class AppComponent {
   baseURL: string = '/api';
   scanArguments: string = '';
   MAX_ARG_LENGTH = 1000; // Maximum allowed argument length
+  private subscriptions: Subscription[] = [];
 
-  constructor(private http: HttpClient, private scanService: ScanService, public dialog: MatDialog) {}
+  constructor(private http: HttpClient, private scanService: ScanService, public dialog: MatDialog, private eventSourceService: EventSourceService) {}
 
   startScan(scanArguments: string) {
     try {
@@ -37,6 +39,43 @@ export class AppComponent {
 
   ngOnInit() {
     this.getList();
+
+    let url = '/api/subscribe';
+    this.eventSourceService.connect(url);
+
+    const messageSubscription = this.eventSourceService.messages$.subscribe((event) => {
+      try {
+        const parsedData = JSON.parse(event.data);
+        switch (parsedData.task) {
+          case "create":
+            this.addCard(parsedData.uuid, parsedData.status);
+            break;
+          case "update":
+            this.updateCard(parsedData.uuid, parsedData.status);
+            break;
+          case "delete":
+            this.deleteCard(parsedData.uuid);
+            break;
+          default:
+            console.error('Unknown task:', parsedData.task);
+            break;
+        }
+        // this.updateCard(parsedData.uuid, parsedData.status);
+      } catch (error) {
+        console.error('Failed to parse event data:', error);
+      }
+    });
+    this.subscriptions.push(messageSubscription);
+
+    const openSubscription = this.eventSourceService.open$.subscribe((event) => {
+      console.log('open', event);
+    });
+    this.subscriptions.push(openSubscription);
+
+    const errorSubscription = this.eventSourceService.error$.subscribe((event) => {
+      console.log('error', event);
+    });
+    this.subscriptions.push(errorSubscription);
   }
 
   getList(): void {
@@ -44,7 +83,6 @@ export class AppComponent {
       .subscribe((data) => {
         data.forEach((result: { uuid: string; status: string }) => {
           this.addCard(result.uuid, result.status);
-          this.pollJobStatus(result.uuid);
         });       
       });
 
@@ -71,35 +109,27 @@ export class AppComponent {
     }
   }
 
-  // Long polling function to check job status
-  pollJobStatus(jobId: string): void {
-    // Poll every 5 seconds
-    const poll$ = timer(0, 1000).pipe(
-      switchMap(() => this.http.get<any>(`${this.baseURL}/job/status?uuid=${jobId}`)),
-      takeWhile(response => response !== 'Completed', true)
-    );
-
-    poll$.subscribe(
-      response => {
-        if (response === 'Completed') {
-          this.addDownloadButton(jobId);
-        } else {
-            console.log('Job status:', response);
-            const element = document.getElementById(jobId);
-            if (element) {
-                element.innerText = response;
-            }
-        }
-      },
-      error => {
-        console.error('Error polling job status:', error);
+  updateCard(jobId: string, status:string): void {
+    const element = document.getElementById(jobId + '-status');
+    if (element) {
+      element.innerText = status;
+      if (status === 'Completed') {
+        this.addDownloadButton(jobId);
       }
-    );
+    }
+  }
+
+  deleteCard(jobId: string): void {
+    const element = document.getElementById(jobId);
+    if (element) {
+      element.parentNode?.removeChild(element);
+    }
   }
 
   addCard(jobId: string, status:string): void {
 
     const card = document.createElement('div');
+    card.id = jobId;
     card.className = 'result-container';
     
     const name = document.createElement('div');
@@ -108,15 +138,21 @@ export class AppComponent {
     card.appendChild(name);
 
     const link = document.createElement('a');
-    link.id = jobId
+    link.id = jobId + '-status';
     link.innerText = status;
+
+    if (status === 'Completed') {
+      link.innerText = "Download";
+      link.href = `${this.baseURL}/job/download?uuid=${jobId}`;
+    }
     card.appendChild(link);
 
     const container = document.getElementById('dl');
     container?.appendChild(card);
   }
+
   private addDownloadButton(jobId: string): void {
-    const element: HTMLAnchorElement | null = document.getElementById(jobId) as HTMLAnchorElement;
+    const element: HTMLAnchorElement | null = document.getElementById(jobId + '-status') as HTMLAnchorElement;
     if (element) {
       element.innerText = "Download";
       element.href = `${this.baseURL}/job/download?uuid=${jobId}`;
@@ -126,16 +162,7 @@ export class AppComponent {
   deleteAll(): void {
     this.http.delete<any>('/api/jobs')
       .subscribe((data) => {
-        const container = document.getElementById('dl');
-        if (container) {
-          container.innerHTML = '';
-        }
-
-        // Now add the remaining cards
-        data.forEach((result: { uuid: string; status: string }) => {
-          this.addCard(result.uuid, result.status);
-          this.pollJobStatus(result.uuid);
-        }); 
+        console.log('All jobs deleted:', data);
       });
   }
   
