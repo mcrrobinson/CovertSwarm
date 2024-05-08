@@ -46,7 +46,7 @@ class UpdateJob(BaseModel):
 
 # Initialize Redis connection
 async def get_redis_client():
-    pool = ConnectionPool.from_url("redis://localhost", decode_responses=True)
+    pool = ConnectionPool.from_url(f"redis://{REDIS_HOST}", decode_responses=True)
     meanings = Redis(connection_pool=pool)
     try:
         yield meanings

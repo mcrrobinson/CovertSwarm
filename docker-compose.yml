@@ -1,28 +1,29 @@
 version: "3.8"
 services:
-  # frontend:
-  #   build: ./frontend
-  #   container_name: 'frontend'
-  #   ports:
-  #     - '80:80'
-  #   depends_on:
-  #     - backend
+  frontend:
+    build: ./frontend
+    container_name: 'frontend'
+    ports:
+      - '80:80'
+    depends_on:
+      - backend
 
-  # backend:
-  #   build: ./backend
-  #   container_name: 'backend'
-  #   ports:
-  #     - '8000:8000'
-  #   environment:
-  #     - REDIS_HOST=redis
-  #     - REDIS_PORT=6379
-  #     - RABBITMQ_HOST=rabbitmq
-  #     - RABBITMQ_PORT=5672
-  #   depends_on:
-  #     - rabbitmq
-  #     - redis
-  #   volumes:
-  #     - ./worker/files:/app/files
+  backend:
+    build: ./backend
+    container_name: 'backend'
+    ports:
+      - '8000:8000'
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - FILES_FOLDER=/app/files
+    depends_on:
+      - rabbitmq
+      - redis
+    volumes:
+      - ./worker/files:/app/files
   
   rabbitmq:
     image: rabbitmq:3-management
