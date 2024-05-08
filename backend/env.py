@@ -1,7 +1,7 @@
 import os
 
 
-FILES_FOLDER = "C:\\Users\\Squash\\CovertSwarm\\worker\\files"
+FILES_FOLDER = os.environ.get("FILES_FOLDER", "../worker/files")
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 
 try:

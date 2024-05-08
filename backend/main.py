@@ -206,10 +206,10 @@ async def sse(
 @api.patch("/job/update")
 async def update_job(job: UpdateJob, redis: Redis = fastapi.Depends(get_redis_client)):
     """Update job data in Redis."""
-    redis.hset(f"job:{job.uuid}", mapping=job.dict())
+    redis.hset(f"job:{job.uuid}", mapping=job.model_dump())
 
     # Also publish job to Redis Pub/Sub so subscribers are updated.
-    redis.publish("events", json.dumps(job.dict()))
+    redis.publish("events", json.dumps(job.model_dump()))
 
 
 @api.delete("/jobs")
@@ -222,10 +222,8 @@ async def delete_all_completed_jobs(redis: Redis = fastapi.Depends(get_redis_cli
     for job_key in job_keys:
         job: dict = redis.hgetall(job_key)
         if job is not None:
-
             # Check if the job status is 'Completed'
             if job.get("status") == "Completed":
-                # Delete the job entry
                 redis.delete(job_key)
 
                 # Extract job_id from job_key

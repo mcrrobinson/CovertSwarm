@@ -1,13 +1,7 @@
-import asyncio
 import os
-from typing import AsyncIterator
-from unittest import mock
-from aioredis import Redis
 import fakeredis
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
-import pytest_asyncio
 from main import app, get_rabbit_connection, get_redis_client
 import pika
 from env import FILES_FOLDER
@@ -37,42 +31,45 @@ def get_rabbit_connection_mock():
     return BlockingConnection()
 
 
-@pytest_asyncio.fixture(scope="function")
-async def redis_conn() -> AsyncIterator[Redis]:
-    async with fakeredis.aioredis.FakeRedis(
-        decode_responses=True, version=(6,)
-    ) as redis_conn:
-        await redis_conn.flushdb()
-        yield redis_conn
+@pytest.fixture(scope="function")
+def redis_client():
+    with fakeredis.FakeStrictRedis(decode_responses=True) as redis_client:
+        redis_client.flushall()
+        yield redis_client
 
 
-@pytest_asyncio.fixture(scope="function")
-async def client(redis_conn: Redis) -> AsyncIterator[TestClient]:
-    get_redis_client_mock = mock.patch(
-        "main.get_redis_client", return_value=redis_conn
-    ).start()
-    app.dependency_overrides[get_redis_client] = get_redis_client_mock
+@pytest.fixture(scope="function")
+def client(redis_client: fakeredis.FakeStrictRedis):
     app.dependency_overrides[get_rabbit_connection] = get_rabbit_connection_mock
+    app.dependency_overrides[get_redis_client] = lambda: redis_client
 
-    with TestClient(app) as client:
-        # Startup code doesn't get called so doing it manually.
-        if not os.path.exists(FILES_FOLDER):
-            os.makedirs(FILES_FOLDER)
-        yield client
+    # Startup code doesn't get called so doing it manually.
+    if not os.path.exists(FILES_FOLDER):
+        os.makedirs(FILES_FOLDER)
 
-    get_redis_client_mock.stop()
-    app.dependency_overrides.pop(get_redis_client)
+    return TestClient(app)
 
 
-@pytest.mark.asyncio
-async def test_job_list(client: TestClient):
+def test_job_list(client: TestClient):
     response = client.get("/api/job/list")
     assert response.status_code == 200
     assert response.json() == []
 
+    # Test invalid methods
+    response = client.post("/api/job/list")
+    assert response.status_code == 405
 
-@pytest.mark.asyncio
-async def test_job_create(client: TestClient):
+    response = client.delete("/api/job/list")
+    assert response.status_code == 405
+
+    response = client.patch("/api/job/list")
+    assert response.status_code == 405
+
+    response = client.put("/api/job/list")
+    assert response.status_code == 405
+
+
+def test_job_create(client: TestClient):
 
     # You could put this in a loop, but I find it easier to read if it fails you
     # know exactly where it failed.
@@ -111,9 +108,21 @@ async def test_job_create(client: TestClient):
     response = client.post("/api/job/create", json={"args": large_input})
     assert response.status_code == 400
 
+    # Test invalid methods
+    response = client.get("/api/job/create")
+    assert response.status_code == 405
 
-@pytest.mark.asyncio
-async def test_download(client: TestClient):
+    response = client.delete("/api/job/create")
+    assert response.status_code == 405
+
+    response = client.patch("/api/job/create")
+    assert response.status_code == 405
+
+    response = client.put("/api/job/create")
+    assert response.status_code == 405
+
+
+def test_download(client: TestClient):
     response = client.post("/api/job/create", json={"args": "localhost"})
     assert response.status_code == 200
 
@@ -124,10 +133,15 @@ async def test_download(client: TestClient):
     response = client.get(f"/api/job/download?uuid={uuid}")
     assert response.status_code == 404
 
+    # Set the status to done
     response = client.patch(
-        "/api/job/update", json={"uuid": uuid, "task": "update", "status": "Completed"}
+        "/api/job/update",
+        json={
+            "uuid": uuid,
+            "task": "update",
+            "status": "Completed",
+        },
     )
-    assert response.status_code == 200
 
     # Simulating a nmap output file
     with open(os.path.join(FILES_FOLDER, f"{uuid}.xml"), "w") as f:
@@ -136,20 +150,39 @@ async def test_download(client: TestClient):
     response = client.get(f"/api/job/download?uuid={uuid}")
     assert response.status_code == 200
 
+    # Cleanup
+    os.remove(os.path.join(FILES_FOLDER, f"{uuid}.xml"))
+    # clear
 
-@pytest.mark.asyncio
-async def test_delete_jobs(client: TestClient):
-    # Create a job
+
+def test_delete_jobs(client: TestClient):
     response = client.post("/api/job/create", json={"args": "localhost"})
     assert response.status_code == 200
 
+    uuid = response.json()
+
     response = client.get("/api/job/list")
     assert response.json() != []
+
+    # Update status
+    response = client.patch(
+        "/api/job/update",
+        json={
+            "uuid": uuid,
+            "task": "update",
+            "status": "Completed",
+        },
+    )
+    assert response.status_code == 200
+
+    with open(os.path.join(FILES_FOLDER, f"{uuid}.xml"), "w") as f:
+        f.write("")
 
     response = client.delete("/api/jobs")
     assert response.status_code == 200
 
     response = client.get("/api/job/list")
+    print(response.json())
     assert response.json() == []
 
     assert os.listdir(FILES_FOLDER) == []
