@@ -19,8 +19,6 @@ export class ScanService {
       .subscribe(
         data => {
           console.log('Job started successfully:', data);
-          this.addCard(data, 'In Progress');
-          this.pollJobStatus(data);  // Assuming the job ID is returned in the response
         },
         error => {
           if (error.status === 403) {
@@ -30,34 +28,6 @@ export class ScanService {
           }
         }
       );
-  }
-
-  // Long polling function to check job status
-  private pollJobStatus(jobId: string): void {
-    const headers = new HttpHeaders({ 'Authorization': 'Bearer someauthbearertoken' });
-
-    // Poll every 5 seconds
-    const poll$ = timer(0, 1000).pipe(
-      switchMap(() => this.http.get<any>(`${this.baseURL}/job/status?uuid=${jobId}`, { headers })),
-      takeWhile(response => response !== 'Completed', true)
-    );
-
-    poll$.subscribe(
-      response => {
-        if (response === 'Completed') {
-          this.addDownloadButton(jobId);
-        } else {
-            console.log('Job status:', response);
-            const element = document.getElementById(jobId);
-            if (element) {
-                element.innerText = response;
-            }
-        }
-      },
-      error => {
-        console.error('Error polling job status:', error);
-      }
-    );
   }
 
   private addCard(jobId: string, status:string): void {

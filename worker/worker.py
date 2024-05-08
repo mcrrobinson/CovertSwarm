@@ -5,6 +5,7 @@ from time import sleep
 from pika.spec import Basic, BasicProperties
 from pika.adapters.blocking_connection import BlockingChannel
 import pika
+import requests
 from env import FILES_FOLDER, RABBITMQ_HOST, RABBITMQ_PORT, REDIS_HOST, REDIS_PORT
 import redis
 import docker
@@ -40,6 +41,15 @@ def worker(
 
     client = docker.from_env()
     redis_client.set(job.uuid, "Started")
+
+    res = requests.patch(
+        "http://localhost:8000/api/job/update",
+        json={"uuid": job.uuid, "status": "Started", "task": "update"},
+    )
+
+    if res.status_code != 200:
+        print("Failed to update status...", res.text)
+
     try:
         container = client.containers.run(
             "instrumentisto/nmap", f"-oX - {job.args}", detach=False, remove=True
@@ -72,6 +82,15 @@ def worker(
 
     redis_client.set(job.uuid, "Completed")
     redis_client.close()
+
+    res = requests.patch(
+        "http://localhost:8000/api/job/update",
+        json={"uuid": job.uuid, "status": "Completed", "task": "update"},
+    )
+
+    if res.status_code != 200:
+        print("Failed to update status...", res.text)
+
     print("Job completed")
 
 

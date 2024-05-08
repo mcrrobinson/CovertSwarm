@@ -1,6 +1,7 @@
 import os
 import fakeredis
 from fastapi.testclient import TestClient
+import pytest
 from main import app, get_rabbit_connection, get_redis_client
 import pika
 from env import FILES_FOLDER
@@ -26,40 +27,49 @@ class BlockingConnection(pika.BlockingConnection):
         pass
 
 
-class RedisClientSingleton:
-    _instance = None
-
-    @classmethod
-    def get_instance(cls):
-        if cls._instance is None:
-            cls._instance = fakeredis.FakeStrictRedis()
-        return cls._instance
-
-
 def get_rabbit_connection_mock():
     return BlockingConnection()
 
 
-def get_redis_client_mock():
-    return RedisClientSingleton().get_instance()
+@pytest.fixture(scope="function")
+def redis_client():
+    with fakeredis.FakeStrictRedis(decode_responses=True) as redis_client:
+        redis_client.flushall()
+        yield redis_client
 
 
-client = TestClient(app)
-app.dependency_overrides[get_rabbit_connection] = get_rabbit_connection_mock
-app.dependency_overrides[get_redis_client] = get_redis_client_mock
+@pytest.fixture(scope="function")
+def client(redis_client: fakeredis.FakeStrictRedis):
+    app.dependency_overrides[get_rabbit_connection] = get_rabbit_connection_mock
+    app.dependency_overrides[get_redis_client] = lambda: redis_client
 
-# Startup code doesn't get called so doing it manually.
-if not os.path.exists(FILES_FOLDER):
-    os.makedirs(FILES_FOLDER)
+    # Startup code doesn't get called so doing it manually.
+    if not os.path.exists(FILES_FOLDER):
+        os.makedirs(FILES_FOLDER)
+
+    return TestClient(app)
 
 
-def test_job_list():
+def test_job_list(client: TestClient):
     response = client.get("/api/job/list")
     assert response.status_code == 200
     assert response.json() == []
 
+    # Test invalid methods
+    response = client.post("/api/job/list")
+    assert response.status_code == 405
 
-def test_job_create():
+    response = client.delete("/api/job/list")
+    assert response.status_code == 405
+
+    response = client.patch("/api/job/list")
+    assert response.status_code == 405
+
+    response = client.put("/api/job/list")
+    assert response.status_code == 405
+
+
+def test_job_create(client: TestClient):
 
     # You could put this in a loop, but I find it easier to read if it fails you
     # know exactly where it failed.
@@ -98,20 +108,21 @@ def test_job_create():
     response = client.post("/api/job/create", json={"args": large_input})
     assert response.status_code == 400
 
+    # Test invalid methods
+    response = client.get("/api/job/create")
+    assert response.status_code == 405
 
-def test_job_status():
-    # Create the job
-    response = client.post("/api/job/create", json={"args": "localhost"})
-    assert response.status_code == 200
+    response = client.delete("/api/job/create")
+    assert response.status_code == 405
 
-    uuid = response.json()
-    assert len(uuid) == 36  # e.g. 417b0f97-882e-4a1b-8408-d90c061c283b
+    response = client.patch("/api/job/create")
+    assert response.status_code == 405
 
-    response = client.get(f"/api/job/status?uuid={uuid}")
-    assert response.json() == "Queued"
+    response = client.put("/api/job/create")
+    assert response.status_code == 405
 
 
-def test_download():
+def test_download(client: TestClient):
     response = client.post("/api/job/create", json={"args": "localhost"})
     assert response.status_code == 200
 
@@ -123,8 +134,14 @@ def test_download():
     assert response.status_code == 404
 
     # Set the status to done
-    redis_client = RedisClientSingleton().get_instance()
-    redis_client.set(uuid, "Done")
+    response = client.patch(
+        "/api/job/update",
+        json={
+            "uuid": uuid,
+            "task": "update",
+            "status": "Completed",
+        },
+    )
 
     # Simulating a nmap output file
     with open(os.path.join(FILES_FOLDER, f"{uuid}.xml"), "w") as f:
@@ -133,18 +150,39 @@ def test_download():
     response = client.get(f"/api/job/download?uuid={uuid}")
     assert response.status_code == 200
 
+    # Cleanup
+    os.remove(os.path.join(FILES_FOLDER, f"{uuid}.xml"))
+    # clear
 
-def test_delete_jobs():
+
+def test_delete_jobs(client: TestClient):
     response = client.post("/api/job/create", json={"args": "localhost"})
     assert response.status_code == 200
 
+    uuid = response.json()
+
     response = client.get("/api/job/list")
     assert response.json() != []
+
+    # Update status
+    response = client.patch(
+        "/api/job/update",
+        json={
+            "uuid": uuid,
+            "task": "update",
+            "status": "Completed",
+        },
+    )
+    assert response.status_code == 200
+
+    with open(os.path.join(FILES_FOLDER, f"{uuid}.xml"), "w") as f:
+        f.write("")
 
     response = client.delete("/api/jobs")
     assert response.status_code == 200
 
     response = client.get("/api/job/list")
+    print(response.json())
     assert response.json() == []
 
     assert os.listdir(FILES_FOLDER) == []

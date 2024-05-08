@@ -1,18 +1,26 @@
+import asyncio
+from collections import defaultdict
+import copy
 import json
 import os
 from time import sleep
-from typing import Generator
+from typing import AsyncGenerator, Generator, NoReturn, Optional
 import fastapi
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import uuid
-import redis
 import logging
 from env import FILES_FOLDER, RABBITMQ_HOST, REDIS_HOST, REDIS_PORT, MAX_ARG_LENGTH
 import pika
+from redis import ConnectionPool, Redis
+from redis.client import PubSub
+from redis.exceptions import ConnectionError
 
 app = fastapi.FastAPI()
 api = fastapi.APIRouter()
+
+active_sse_connections: set = set()
 
 origins = ["*"]
 logger = logging.getLogger("uvicorn")
@@ -30,8 +38,20 @@ class Job(BaseModel):
     args: str
 
 
-def get_redis():
-    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+class UpdateJob(BaseModel):
+    uuid: str
+    status: str
+    task: str
+
+
+# Initialize Redis connection
+async def get_redis_client():
+    pool = ConnectionPool.from_url(f"redis://{REDIS_HOST}", decode_responses=True)
+    meanings = Redis(connection_pool=pool)
+    try:
+        yield meanings
+    finally:
+        meanings.close()
 
 
 # Dependency to get RabbitMQ connection
@@ -42,63 +62,6 @@ def get_rabbit_connection() -> Generator[pika.BlockingConnection, None, None]:
         yield connection
     finally:
         connection.close()
-
-
-def get_redis_client() -> Generator[redis.Redis, None, None]:
-    redis_client = get_redis()
-    try:
-        yield redis_client
-    finally:
-        redis_client.close()
-
-
-@api.get("/job/status")
-def status(
-    uuid: str,
-    redis_client: redis.Redis = fastapi.Depends(get_redis_client),
-):
-    """Gets the status of the job with the given UUID
-
-    Args:
-        uuid (str): UUID of the job
-        request (fastapi.Request): Request object
-        response (fastapi.Response): Response object
-
-    Returns:
-        str: Status of the job
-    """
-    job_status = redis_client.get(uuid)
-    return job_status
-
-
-@api.delete("/jobs")
-def delete_jobs(
-    redis_client: redis.Redis = fastapi.Depends(get_redis_client),
-):
-    """Deletes all files in the files folder
-
-    Args:
-        request (fastapi.Request): Request object
-        response (fastapi.Response): Response object
-
-    Returns:
-        list[str]: The empty list of files
-    """
-    files = [file for file in os.listdir(FILES_FOLDER)]
-    for file in files:
-        os.remove(os.path.join(FILES_FOLDER, file))
-
-    # Don't delete the tasks that are running to avoid deadlocks
-    keys = redis_client.keys()
-    processing_keys = []
-    for key in keys:
-        value = redis_client.get(key).decode()
-        if value == "Completed":
-            redis_client.delete(key)
-        else:
-            processing_keys.append({"uuid": key.decode(), "value": value})
-
-    return processing_keys
 
 
 def validation_checks(arg: str):
@@ -139,10 +102,10 @@ def validation_checks(arg: str):
 
 
 @api.post("/job/create")
-def read_root(
-    job: Job,
+async def read_root(
+    argsModel: Job,
     rabbit_connection: pika.BlockingConnection = fastapi.Depends(get_rabbit_connection),
-    redis_client: redis.Redis = fastapi.Depends(get_redis_client),
+    redis: Redis = fastapi.Depends(get_redis_client),
 ):
     """Creates a new job and returns the UUID of the job
 
@@ -159,15 +122,25 @@ def read_root(
     # of the nmap command as this pipes the command directly into the "nmap"
     # command line tool. However, for sanity sake I will disallow certain
     # offenders like bash special characters.
-    validation_checks(job.args)
+    validation_checks(argsModel.args)
 
     worker_id = str(uuid.uuid4())
-    redis_client.set(worker_id, "Queued")
+    job = {
+        "uuid": worker_id,
+        "status": "Queued",
+        "task": "create",
+    }
+
+    # Add the queued job to redis
+    redis.hset(f"job:{worker_id}", mapping=job)
+
+    # Publish the job to Redis Pub/Sub so subscribers are updated.
+    redis.publish("events", json.dumps(job))
 
     # Send the job to the queue and then close the connection for cleanup.
     channel = rabbit_connection.channel()
     channel.queue_declare(queue="job_queue")
-    message = json.dumps({"uuid": worker_id, "args": job.args})
+    message = json.dumps({"uuid": worker_id, "args": argsModel.args})
     channel.basic_publish(exchange="", routing_key="job_queue", body=message)
     return worker_id
 
@@ -195,28 +168,108 @@ def download(uuid: str, response: fastapi.Response) -> fastapi.responses.FileRes
     )
 
 
-def get_keys_and_values(redis_client: redis.Redis = fastapi.Depends(get_redis_client)):
-    keys = redis_client.keys()
-    values = [
-        {"uuid": key.decode(), "value": redis_client.get(key).decode()} for key in keys
-    ]
-    return values
+async def event_stream(request: fastapi.Request, pubsub_channel: PubSub):
+    active_sse_connections.add(request)
+    try:
+        while True:
+            if await request.is_disconnected():
+                break
+
+            try:
+                message = pubsub_channel.get_message(
+                    ignore_subscribe_messages=True, timeout=0
+                )
+                if message and message["type"] == "message":
+                    data = message["data"]
+                    yield f"data: {data}\n\n"
+            except Exception as e:
+                logger.critical(f"Error: {str(e)}")
+            await asyncio.sleep(0.1)
+    finally:
+        active_sse_connections.remove(request)
+        pubsub_channel.unsubscribe("events")
+
+
+@api.get("/subscribe")
+async def sse(
+    request: fastapi.Request, redis: Redis = fastapi.Depends(get_redis_client)
+):
+    pubsub = redis.pubsub()
+    pubsub.subscribe("events")
+
+    active_sse_connections.add(id(request))
+    return StreamingResponse(
+        event_stream(request, pubsub), media_type="text/event-stream"
+    )
+
+
+@api.patch("/job/update")
+async def update_job(job: UpdateJob, redis: Redis = fastapi.Depends(get_redis_client)):
+    """Update job data in Redis."""
+    redis.hset(f"job:{job.uuid}", mapping=job.model_dump())
+
+    # Also publish job to Redis Pub/Sub so subscribers are updated.
+    redis.publish("events", json.dumps(job.model_dump()))
+
+
+@api.delete("/jobs")
+async def delete_all_completed_jobs(redis: Redis = fastapi.Depends(get_redis_client)):
+    """Delete all job entries from Redis where the status is 'Completed'."""
+    # Get all job keys from Redis
+    job_keys = redis.keys("job:*")
+    deleted_jobs = []
+
+    for job_key in job_keys:
+        job: dict = redis.hgetall(job_key)
+        if job is not None:
+            # Check if the job status is 'Completed'
+            if job.get("status") == "Completed":
+                redis.delete(job_key)
+
+                # Extract job_id from job_key
+                job_id = job.get("uuid")
+
+                # Delete the associated file
+                file_path = os.path.join(FILES_FOLDER, f"{job_id}.xml")
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                else:
+                    logger.error(
+                        f"File {file_path} not found but corresponding job entry set to be deleted in Redis"
+                    )
+
+                # Notify via Redis publish that the job has been deleted
+                job["task"] = "delete"
+                redis.publish("events", json.dumps(job))
+                deleted_jobs.append(job_id)
+            else:
+                uuid = job.get("uuid")
+                if not uuid:
+                    logger.debug(
+                        f"Job {job_key} status is not 'Completed'; it will not be deleted."
+                    )
+                else:
+                    logger.debug(
+                        f"Job {uuid} status is not 'Completed'; it will not be deleted."
+                    )
+        else:
+            logger.error(f"Job {job_key} not found.")
+
+    if deleted_jobs:
+        logger.debug(f"Deleted jobs: {', '.join(deleted_jobs)}")
+    else:
+        logger.debug("No completed jobs found to delete.")
 
 
 @api.get("/job/list")
-def list(
-    redis_client: redis.Redis = fastapi.Depends(get_redis_client),
-):
-    """Gets the list of files in the files folder
+async def list_jobs(redis: Redis = fastapi.Depends(get_redis_client)):
+    keys = redis.keys("job:*")
+    jobs = []
+    for key in keys:
+        job = redis.hgetall(key)
+        jobs.append(job)
 
-    Args:
-        request (fastapi.Request): Request object
-        response (fastapi.Response): Response object
-
-    Returns:
-        list[str]: List of files in the files from the redis database
-    """
-    return get_keys_and_values(redis_client)
+    return jobs
 
 
 @api.on_event("startup")
@@ -233,21 +286,25 @@ async def startup_event():
     # Make sure redis is running
     while True:
         try:
-            redis_client = get_redis()
-            redis_client.set("test", "test")
-            assert redis_client.get("test") == b"test"
-            redis_client.delete("test")
-            redis_client.close()
+            # redis_client = await get_redis_client()
             break
 
-        except redis.exceptions.ConnectionError as e:
+        except ConnectionError as e:
             logger.error("Cannot connect to redis, {}".format(str(e)))
             sleep(1)
         except Exception as e:
             logger.error("Unhandled redis exception {}".format(str(e)))
             sleep(1)
 
-    print("Startup complete")
+    logger.debug("Startup complete")
+
+
+@api.on_event("shutdown")
+async def shutdown_event():
+    # Attempt to close each SSE connection
+    for request in list(active_sse_connections):
+        active_sse_connections.remove(request)
+        await request._send({"type": "http.disconnect"})
 
 
 app.include_router(api, prefix="/api", tags=["api"])
