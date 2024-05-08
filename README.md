@@ -105,3 +105,5 @@ sequenceDiagram
 I would abstract the security checks into it's own lib that can be called from the worker and backend to avoid the duplication of the command line injection checks.
 
 Additionally, saving files to the OS could be easily replaced by an object storage like S3 bucket. This would allow for easier scaling and better performance.
+
+Robust queue connections. Upon the rabbit queue going down the clients will automatically reconnect.
