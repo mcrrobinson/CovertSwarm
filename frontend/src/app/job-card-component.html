@@ -1,0 +1,10 @@
+<div class="result-container">
+  <div class="result-name">{{ job.id }}</div>
+  <!-- Use the safe navigation operator to ensure no undefined errors occur -->
+  <ng-container *ngIf="job?.status === 'Completed'; else notCompleted">
+    <a [href]="downloadLink">{{ jobStatus }}</a>
+  </ng-container>
+  <ng-template #notCompleted>
+    <span>{{ jobStatus }}</span>
+  </ng-template>
+</div>

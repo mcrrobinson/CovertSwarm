@@ -68,7 +68,8 @@
     <h2>Results</h2>
     <button (click)="deleteAll()">Delete all</button>
   </div>
-  <div id="dl"></div>
+  <app-job-card *ngFor="let job of jobs" [job]="job"></app-job-card>
+  <!-- <div id="dl"></div> -->
 </main>
 
 <router-outlet />

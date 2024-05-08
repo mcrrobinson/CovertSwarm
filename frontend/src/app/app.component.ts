@@ -8,12 +8,13 @@ import { Subscription, switchMap, takeWhile, timer } from 'rxjs';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { ErrorDialogComponent } from './error-dialog.component';
 import { EventSourceService } from './event-source.service';
+import { JobCardComponent } from './job-card-component';
 
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [RouterOutlet, FormsModule, CommonModule, MatDialogModule ],
+  imports: [RouterOutlet, FormsModule, CommonModule, MatDialogModule, JobCardComponent],
   templateUrl: './app.component.html',
   styleUrl: './app.component.css'
 })
@@ -22,6 +23,7 @@ export class AppComponent {
   scanArguments: string = '';
   MAX_ARG_LENGTH = 1000; // Maximum allowed argument length
   private subscriptions: Subscription[] = [];
+  jobs: { id: string; status: string }[] = [];
 
   constructor(private http: HttpClient, private scanService: ScanService, public dialog: MatDialog, private eventSourceService: EventSourceService) {}
 
@@ -109,47 +111,62 @@ export class AppComponent {
     }
   }
 
-  updateCard(jobId: string, status:string): void {
-    const element = document.getElementById(jobId + '-status');
-    if (element) {
-      element.innerText = status;
-      if (status === 'Completed') {
-        this.addDownloadButton(jobId);
-      }
+  addCard(jobId: string, status: string): void {
+    this.jobs.push({ id: jobId, status });
+  }
+  
+  updateCard(jobId: string, status: string): void {
+    const job = this.jobs.find(j => j.id === jobId);
+    if (job) {
+      job.status = status;
     }
   }
-
+  
   deleteCard(jobId: string): void {
-    const element = document.getElementById(jobId);
-    if (element) {
-      element.parentNode?.removeChild(element);
-    }
+    this.jobs = this.jobs.filter(j => j.id !== jobId);
   }
 
-  addCard(jobId: string, status:string): void {
+  // updateCard(jobId: string, status:string): void {
+  //   const element = document.getElementById(jobId + '-status');
+  //   if (element) {
+  //     element.innerText = status;
+  //     if (status === 'Completed') {
+  //       this.addDownloadButton(jobId);
+  //     }
+  //   }
+  // }
 
-    const card = document.createElement('div');
-    card.id = jobId;
-    card.className = 'result-container';
+  // deleteCard(jobId: string): void {
+  //   const element = document.getElementById(jobId);
+  //   if (element) {
+  //     element.parentNode?.removeChild(element);
+  //   }
+  // }
+
+  // addCard(jobId: string, status:string): void {
+
+  //   const card = document.createElement('div');
+  //   card.id = jobId;
+  //   card.className = 'result-container';
     
-    const name = document.createElement('div');
-    name.className = 'result-name';
-    name.innerText = jobId;
-    card.appendChild(name);
+  //   const name = document.createElement('div');
+  //   name.className = 'result-name';
+  //   name.innerText = jobId;
+  //   card.appendChild(name);
 
-    const link = document.createElement('a');
-    link.id = jobId + '-status';
-    link.innerText = status;
+  //   const link = document.createElement('a');
+  //   link.id = jobId + '-status';
+  //   link.innerText = status;
 
-    if (status === 'Completed') {
-      link.innerText = "Download";
-      link.href = `${this.baseURL}/job/download?uuid=${jobId}`;
-    }
-    card.appendChild(link);
+  //   if (status === 'Completed') {
+  //     link.innerText = "Download";
+  //     link.href = `${this.baseURL}/job/download?uuid=${jobId}`;
+  //   }
+  //   card.appendChild(link);
 
-    const container = document.getElementById('dl');
-    container?.appendChild(card);
-  }
+  //   const container = document.getElementById('dl');
+  //   container?.appendChild(card);
+  // }
 
   private addDownloadButton(jobId: string): void {
     const element: HTMLAnchorElement | null = document.getElementById(jobId + '-status') as HTMLAnchorElement;

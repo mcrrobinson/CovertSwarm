@@ -8,6 +8,13 @@ from env import FILES_FOLDER
 
 
 class BlockingConnection(pika.BlockingConnection):
+    """A mock class for pika.BlockingConnection in order to avoid errors when
+    running these functions but without having to actually connect to RabbitMQ.
+
+    Args:
+        pika (_type_): _description_
+    """
+
     def __init__(self, *args, **kwargs):
         pass
 
@@ -154,6 +161,19 @@ def test_download(client: TestClient):
     os.remove(os.path.join(FILES_FOLDER, f"{uuid}.xml"))
     # clear
 
+    # Test invalid methods
+    response = client.post(f"/api/job/download?uuid={uuid}")
+    assert response.status_code == 405
+
+    response = client.delete(f"/api/job/download?uuid={uuid}")
+    assert response.status_code == 405
+
+    response = client.patch(f"/api/job/download?uuid={uuid}")
+    assert response.status_code == 405
+
+    response = client.put(f"/api/job/download?uuid={uuid}")
+    assert response.status_code == 405
+
 
 def test_delete_jobs(client: TestClient):
     response = client.post("/api/job/create", json={"args": "localhost"})
@@ -186,3 +206,16 @@ def test_delete_jobs(client: TestClient):
     assert response.json() == []
 
     assert os.listdir(FILES_FOLDER) == []
+
+    # Test invalid methods
+    response = client.post("/api/jobs")
+    assert response.status_code == 405
+
+    response = client.patch("/api/jobs")
+    assert response.status_code == 405
+
+    response = client.put("/api/jobs")
+    assert response.status_code == 405
+
+    response = client.get("/api/jobs")
+    assert response.status_code == 405

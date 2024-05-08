@@ -1,17 +1,16 @@
 import asyncio
-from collections import defaultdict
-import copy
 import json
 import os
 from time import sleep
-from typing import AsyncGenerator, Generator, NoReturn, Optional
+from typing import AsyncGenerator, Generator
 import fastapi
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import uuid
 import logging
-from env import FILES_FOLDER, RABBITMQ_HOST, REDIS_HOST, REDIS_PORT, MAX_ARG_LENGTH
+from defs import Job, UpdateJob
+from env import FILES_FOLDER, RABBITMQ_HOST, REDIS_HOST, MAX_ARG_LENGTH
 import pika
 from redis import ConnectionPool, Redis
 from redis.client import PubSub
@@ -34,18 +33,12 @@ app.add_middleware(
 )
 
 
-class Job(BaseModel):
-    args: str
-
-
-class UpdateJob(BaseModel):
-    uuid: str
-    status: str
-    task: str
-
-
-# Initialize Redis connection
 async def get_redis_client():
+    """Creates a connection to Redis and returns it as a generator.
+
+    Yields:
+        Generator[Redis, None, None]: Generator connection to Redis
+    """
     pool = ConnectionPool.from_url(f"redis://{REDIS_HOST}", decode_responses=True)
     meanings = Redis(connection_pool=pool)
     try:
@@ -54,9 +47,12 @@ async def get_redis_client():
         meanings.close()
 
 
-# Dependency to get RabbitMQ connection
 def get_rabbit_connection() -> Generator[pika.BlockingConnection, None, None]:
-    # Connect to the RabbitMQ server
+    """Creates a connection to RabbitMQ and returns it as a generator.
+
+    Yields:
+        Generator[pika.BlockingConnection, None, None]: Generator connection to RabbitMQ
+    """
     connection = pika.BlockingConnection(pika.ConnectionParameters(RABBITMQ_HOST))
     try:
         yield connection
@@ -99,6 +95,37 @@ def validation_checks(arg: str):
         raise fastapi.HTTPException(
             status_code=400, detail="Illegal protocol used in argument"
         )
+
+
+async def event_stream(request: fastapi.Request, pubsub_channel: PubSub):
+    """Server side event stream generator for real-time updates on jobs
+
+    Args:
+        request (fastapi.Request): Request object
+        pubsub_channel (PubSub): _description_
+
+    Yields:
+        AsyncGenerator[str, None, None]: Generator of messages
+    """
+    active_sse_connections.add(request)
+    try:
+        while True:
+            if await request.is_disconnected():
+                break
+
+            try:
+                message = pubsub_channel.get_message(
+                    ignore_subscribe_messages=True, timeout=0
+                )
+                if message and message["type"] == "message":
+                    data = message["data"]
+                    yield f"data: {data}\n\n"
+            except Exception as e:
+                logger.critical(f"Error: {str(e)}")
+            await asyncio.sleep(0.1)
+    finally:
+        active_sse_connections.remove(request)
+        pubsub_channel.unsubscribe("events")
 
 
 @api.post("/job/create")
@@ -168,32 +195,19 @@ def download(uuid: str, response: fastapi.Response) -> fastapi.responses.FileRes
     )
 
 
-async def event_stream(request: fastapi.Request, pubsub_channel: PubSub):
-    active_sse_connections.add(request)
-    try:
-        while True:
-            if await request.is_disconnected():
-                break
-
-            try:
-                message = pubsub_channel.get_message(
-                    ignore_subscribe_messages=True, timeout=0
-                )
-                if message and message["type"] == "message":
-                    data = message["data"]
-                    yield f"data: {data}\n\n"
-            except Exception as e:
-                logger.critical(f"Error: {str(e)}")
-            await asyncio.sleep(0.1)
-    finally:
-        active_sse_connections.remove(request)
-        pubsub_channel.unsubscribe("events")
-
-
 @api.get("/subscribe")
 async def sse(
     request: fastapi.Request, redis: Redis = fastapi.Depends(get_redis_client)
 ):
+    """Server side event stream for real-time updates on jobs
+
+    Args:
+        request (fastapi.Request): Request object
+        redis (Redis, optional): Connection to redis. Defaults to fastapi.Depends(get_redis_client).
+
+    Returns:
+        StreamingResponse: Stream response object
+    """
     pubsub = redis.pubsub()
     pubsub.subscribe("events")
 
@@ -205,7 +219,12 @@ async def sse(
 
 @api.patch("/job/update")
 async def update_job(job: UpdateJob, redis: Redis = fastapi.Depends(get_redis_client)):
-    """Update job data in Redis."""
+    """Updates the job in Redis and publishes the update to Redis Pub/Sub
+
+    Args:
+        job (UpdateJob): Job object containing the UUID, status and task
+        redis (Redis, optional): Connection to redis. Defaults to fastapi.Depends(get_redis_client).
+    """
     redis.hset(f"job:{job.uuid}", mapping=job.model_dump())
 
     # Also publish job to Redis Pub/Sub so subscribers are updated.
@@ -214,8 +233,11 @@ async def update_job(job: UpdateJob, redis: Redis = fastapi.Depends(get_redis_cl
 
 @api.delete("/jobs")
 async def delete_all_completed_jobs(redis: Redis = fastapi.Depends(get_redis_client)):
-    """Delete all job entries from Redis where the status is 'Completed'."""
-    # Get all job keys from Redis
+    """Delete all completed jobs from Redis and the associated files from the filesystem.
+
+    Args:
+        redis (Redis, optional): Connection to redis. Defaults to fastapi.Depends(get_redis_client).
+    """
     job_keys = redis.keys("job:*")
     deleted_jobs = []
 
